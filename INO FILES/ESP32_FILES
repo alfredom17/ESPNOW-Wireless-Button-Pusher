@@ -1,0 +1,116 @@
+/*
+ESP32 MASTER
+
+
+This code is fused from the example code using the ESPNOW examples from -> Lucas Saavedra Vaz - 2024
+
+Added the following:
+-> Pullup button to send message
+-> Reduced to 250 kbps to increase transmission distance
+-> Activate internal ESP32 led to indicate when sending a message
+
+*/
+
+#include "ESP32_NOW.h"
+#include "WiFi.h"
+#include <esp_mac.h>
+#include <esp_wifi.h>
+
+/* Definiciones */
+#define ESPNOW_WIFI_CHANNEL 6
+
+/* Clases */
+class ESP_NOW_Broadcast_Peer : public ESP_NOW_Peer {
+public:
+  ESP_NOW_Broadcast_Peer(uint8_t channel, wifi_interface_t iface, const uint8_t *lmk) 
+    : ESP_NOW_Peer(ESP_NOW.BROADCAST_ADDR, channel, iface, lmk) {}
+
+  ~ESP_NOW_Broadcast_Peer() { remove(); }
+
+  bool begin() {
+    if (!ESP_NOW.begin() || !add()) {
+      log_e("Failed to initialize ESP-NOW or register the broadcast peer");
+      return false;
+    }
+    return true;
+  }
+
+  bool send_message(const uint8_t *data, size_t len) {
+    if (!send(data, len)) {
+      log_e("Failed to broadcast message");
+      return false;
+    }
+    return true;
+  }
+};
+
+/* Variables Globales */
+uint32_t msg_count = 0;
+uint8_t buttonPin = 4;
+int ledPin = 2;
+
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 150;
+int buttonState = HIGH;
+int lastButtonState = HIGH;
+
+ESP_NOW_Broadcast_Peer broadcast_peer(ESPNOW_WIFI_CHANNEL, WIFI_IF_STA, NULL);
+
+/* Setup */
+void setup() {
+  Serial.begin(115200);
+  while (!Serial) { delay(10); }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setChannel(ESPNOW_WIFI_CHANNEL);
+  WiFi.enableLongRange(true);  // Activar modo de largo alcance
+  esp_wifi_set_max_tx_power(78);  // Máxima potencia de transmisión
+
+  while (!WiFi.STA.started()) { delay(100); }
+
+  Serial.println("ESP-NOW Example - Broadcast Master");
+  Serial.println("Wi-Fi parameters:");
+  Serial.println("  Mode: STA");
+  Serial.println("  MAC Address: " + WiFi.macAddress());
+  Serial.printf("  Channel: %d\n", ESPNOW_WIFI_CHANNEL);
+
+  if (!broadcast_peer.begin()) {
+    Serial.println("Failed to initialize broadcast peer");
+    delay(5000);
+    ESP.restart();
+  }
+
+  esp_wifi_config_espnow_rate(WIFI_IF_STA, WIFI_PHY_RATE_LORA_250K);  // Reducir velocidad para mayor alcance
+  pinMode(buttonPin, INPUT_PULLUP);
+  pinMode(ledPin, OUTPUT);
+}
+
+/* Loop */
+void loop() {
+  int buttonLecture = digitalRead(buttonPin);
+
+  if (buttonLecture != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (buttonLecture != buttonState) {
+      buttonState = buttonLecture;
+
+      if (buttonState == LOW) {
+        digitalWrite(ledPin, HIGH);
+        char data[32];
+        snprintf(data, sizeof(data), "Paquete: #%lu", msg_count++);
+        Serial.printf("Broadcasting message: %s\n", data);
+
+        if (!broadcast_peer.send_message((uint8_t *)data, sizeof(data))) {
+          Serial.println("Failed to broadcast message");
+        }
+      } else {
+        digitalWrite(ledPin, LOW);
+      }
+    }
+  }
+
+  lastButtonState = buttonLecture;
+}
